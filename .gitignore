@@ -1,0 +1,27 @@
+# Node.js dependencies
+**/node_modules/
+**/package-lock.json
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# dotenv environment variables
+.env
+.env.*.local
+
+# Ignore VSCode project settings
+.vscode/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Optional: test output or generated files
+*.out
+*.test.js.snap

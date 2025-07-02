@@ -1,0 +1,12 @@
+{
+  "name": "infobip-sms-api",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "prom-client": "^14.2.0",
+    "winston": "^3.8.2"
+  }
+}
