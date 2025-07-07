@@ -26,10 +26,12 @@ async function sendSMS(i) {
     }
 
     const payload = {
-      to: `+1444555${Math.floor(Math.random() * 10000)}`,
+      to: `+1444555${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`,
       text: `Hello from test #${i}`,
       from: "AutomationScript"
     };
+    // ~10% chance to omit 'to' field
+    if (Math.random() < 0.1) delete payload.to;
 
     const res = await axios.post(`${BASE_URL}/sms/send`, payload, { headers });
     console.log(`[${i}] ✅ Sent: ${res.data.status} | ${res.data.to}`);

@@ -28,7 +28,7 @@ const httpRequests = new promClient.Counter({
 const httpErrors = new promClient.Counter({
   name: 'http_errors_total',
   help: 'Total number of HTTP errors',
-  labelNames: ['method', 'route', 'error_type']
+  labelNames: ['method', 'route', 'error_type', 'status_code']
 });
 
 // 4. SATURATION - System resource usage
@@ -89,7 +89,7 @@ function getResponseTime() {
 // Simulate error scenarios
 function shouldSimulateError() {
   if (systemUnderLoad) {
-    return Math.random() < 0.05; // 5% error rate under load
+    return Math.random() < 0.5; // 50% error rate under load
   }
   return Math.random() < 0.001; // 0.1% normal error rate
 }
@@ -101,26 +101,30 @@ function shouldSimulateError() {
 // Metrics collection middleware
 app.use((req, res, next) => {
   const start = Date.now();
-  
+
   res.on('finish', () => {
+    if (req.path === '/metrics') {
+      return next();
+    }
     const duration = Date.now() - start;
     const labels = {
       method: req.method,
       route: req.route?.path || req.path,
       status_code: res.statusCode
     };
-    
+
     httpDuration.observe(labels, duration);
     httpRequests.inc(labels);
-    
+
     if (res.statusCode >= 400) {
       httpErrors.inc({
         method: req.method,
         route: req.route?.path || req.path,
+        status_code: res.statusCode.toString(), 
         error_type: res.statusCode >= 500 ? 'server_error' : 'client_error'
       });
     }
-    
+
     logger.info('API Request', {
       method: req.method,
       path: req.path,
@@ -130,7 +134,7 @@ app.use((req, res, next) => {
       ip: req.ip
     });
   });
-  
+
   next();
 });
 
@@ -140,10 +144,10 @@ app.use((req, res, next) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     timestamp: new Date().toISOString(),
-    queueDepth: currentQueueDepth 
+    queueDepth: currentQueueDepth
   });
 });
 
@@ -151,10 +155,10 @@ app.get('/health', (req, res) => {
 app.post('/sms/send', async (req, res) => {
 
   const { to, text, from } = req.body;
-  
+
   // Simulate realistic processing time
   const processingTime = getResponseTime();
-  
+
   // Simulate errors under load
   if (shouldSimulateError()) {
     logger.error('SMS Send Error', {
@@ -162,55 +166,55 @@ app.post('/sms/send', async (req, res) => {
       error: 'Internal server error',
       queueDepth: currentQueueDepth
     });
-    
+
     return res.status(500).json({
       error: 'Internal server error',
       message: 'Unable to process SMS request'
     });
   }
-  
+
   // Simulate validation errors
   if (!to || !text) {
     logger.warn('SMS Validation Error', {
       to: to,
       error: 'Missing required fields'
     });
-    
+
     return res.status(400).json({
       error: 'Bad request',
       message: 'Missing required fields: to, text'
     });
   }
-  
+
   // Simulate rate limiting
   if (req.headers['x-api-key'] === 'rate-limited-key') {
     logger.warn('Rate Limit Exceeded', {
       apiKey: req.headers['x-api-key'],
       to: to
     });
-    
+
     return res.status(429).json({
       error: 'Rate limit exceeded',
       message: 'Too many requests, please slow down',
       retryAfter: 30
     });
   }
-  
+
   // Simulate processing delay
   await new Promise(resolve => setTimeout(resolve, processingTime));
-  
+
   // Update queue metrics
   currentQueueDepth += Math.random() * 10 - 5; // Random queue fluctuation
   currentQueueDepth = Math.max(0, currentQueueDepth);
   smsQueue.set(Math.round(currentQueueDepth));
-  
+
   // Simulate successful delivery
-  const country = to.startsWith('+1') ? 'US' : 
-                 to.startsWith('+44') ? 'UK' : 
-                 to.startsWith('+49') ? 'DE' : 'OTHER';
-  
+  const country = to.startsWith('+1') ? 'US' :
+    to.startsWith('+44') ? 'UK' :
+      to.startsWith('+49') ? 'DE' : 'OTHER';
+
   smsDelivered.inc({ destination_country: country, status: 'delivered' });
-  
+
   logger.info('SMS Sent Successfully', {
     to: to,
     from: from,
@@ -218,7 +222,7 @@ app.post('/sms/send', async (req, res) => {
     processingTime: processingTime,
     queueDepth: currentQueueDepth
   });
-  
+
   res.json({
     messageId: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     status: 'accepted',
@@ -241,9 +245,9 @@ app.get('/metrics', async (req, res) => {
   memoryUsage.set({ type: 'rss' }, memUsage.rss);
   memoryUsage.set({ type: 'heapUsed' }, memUsage.heapUsed);
   memoryUsage.set({ type: 'heapTotal' }, memUsage.heapTotal);
-  
+
   systemLoad.set(Math.random() * 3); // Simulate load average
-  
+
   res.set('Content-Type', promClient.register.contentType);
   res.end(await promClient.register.metrics());
 });
