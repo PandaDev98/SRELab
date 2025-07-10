@@ -1,37 +1,35 @@
+require('dotenv').config();
 const express = require('express');
 const promClient = require('prom-client');
 const winston = require('winston');
+const https = require('follow-redirects').https;
 
 const app = express();
 app.use(express.json());
 
 // ============================================
-// PROMETHEUS METRICS (4 Golden Signals)
+// PROMETHEUS METRICS
 // ============================================
 
-// 1. LATENCY - Response time histogram
-const httpDuration = new promClient.Histogram({
-  name: 'http_request_duration_ms',
-  help: 'Duration of HTTP requests in ms',
-  labelNames: ['method', 'route', 'status_code'],
-  buckets: [50, 100, 200, 500, 1000, 2000, 5000]
+const whatsappDuration = new promClient.Histogram({
+  name: 'whatsapp_request_duration_ms',
+  help: 'Duration of WhatsApp template requests in ms',
+  labelNames: ['status_code'],
+  buckets: [100, 200, 500, 800, 1000, 2000, 5000]
 });
 
-// 2. TRAFFIC - Request rate counter
-const httpRequests = new promClient.Counter({
-  name: 'http_requests_total',
-  help: 'Total number of HTTP requests',
-  labelNames: ['method', 'route', 'status_code']
+const whatsappErrors = new promClient.Counter({
+  name: 'whatsapp_errors_total',
+  help: 'Total number of WhatsApp API errors',
+  labelNames: ['error_type', 'status_code']
 });
 
-// 3. ERRORS - Error rate counter
-const httpErrors = new promClient.Counter({
-  name: 'http_errors_total',
-  help: 'Total number of HTTP errors',
-  labelNames: ['method', 'route', 'error_type', 'status_code']
+const interactive_message_sent_total = new promClient.Counter({
+  name: 'interactive_message_sent_total',
+  help: 'Total number of successfully sent WhatsApp templates',
+  labelNames: ['language', 'platform']
 });
 
-// 4. SATURATION - System resource usage
 const systemLoad = new promClient.Gauge({
   name: 'system_load_avg',
   help: 'System load average'
@@ -43,35 +41,11 @@ const memoryUsage = new promClient.Gauge({
   labelNames: ['type']
 });
 
-// SMS-specific metrics
-const smsQueue = new promClient.Gauge({
-  name: 'sms_queue_depth',
-  help: 'Number of SMS messages waiting in queue'
+const platformDeliveryStatus = new promClient.Gauge({
+  name: 'platform_delivery_status',
+  help: 'Delivery state: 1 = Delivered, 0.5 = Pending, 0 = Rejected or Failed',
+  labelNames: ['platform', 'status_name']
 });
-
-const smsDelivered = new promClient.Counter({
-  name: 'sms_delivered_total',
-  help: 'Total SMS messages delivered',
-  labelNames: ['destination_country', 'status', 'platform']
-});
-
-// ============================================
-// PLATFORM-SPECIFIC METRICS
-// ============================================
-
-const platformError = new promClient.Counter({
-  name: 'platform_error_total',
-  help: 'Total number of platform-specific API errors',
-  labelNames: ['platform', 'api', 'error_type']
-});
-
-const sendMessageCalls = new promClient.Counter({
-  name: 'send_message_calls_total',
-  help: 'Total sendMessage API calls',
-  labelNames: ['platform']
-});
-
-
 
 // ============================================
 // LOGGING SETUP
@@ -84,172 +58,201 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   transports: [
-    new winston.transports.File({ filename: '../logs/api.log' }),
+    new winston.transports.File({ filename: './logs/api.log' }),
     new winston.transports.Console()
   ]
 });
 
 // ============================================
-// SIMULATION DATA
+// ENDPOINT: Send WhatsApp Template
 // ============================================
 
-let currentQueueDepth = 0;
-let systemUnderLoad = false;
-
-// Simulate realistic response times based on system load
-function getResponseTime() {
-  if (systemUnderLoad) {
-    return Math.random() * 2000 + 500; // 500-2500ms under load
-  }
-  return Math.random() * 200 + 50; // 50-250ms normal
-}
-
-// Simulate error scenarios
-function shouldSimulateError() {
-  if (systemUnderLoad) {
-    return Math.random() < 0.5; // 50% error rate under load
-  }
-  return Math.random() < 0.001; // 0.1% normal error rate
-}
-
-// ============================================
-// MIDDLEWARE
-// ============================================
-
-// Metrics collection middleware
-app.use((req, res, next) => {
+app.post('/whatsapp/send-template', async (req, res) => {
   const start = Date.now();
 
-  res.on('finish', () => {
-    if (req.path === '/metrics') {
-      return next();
+  const {
+    to = '573005944681',
+    from = '447860099299',
+    platform = 'default'
+  } = req.body;
+
+
+  const payload = JSON.stringify({
+    from,
+    to,
+    messageId: `msg_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+    content: {
+      body: {
+        text: "👋 Hi! How can we assist you today?"
+      },
+      action: {
+        title: "Choose a Service",
+        sections: [
+          {
+            title: "📦 Account & Services",
+            rows: [
+              {
+                id: "check-balance",
+                title: "💰 Check My Balance",
+                description: "View your current available balance."
+              },
+              {
+                id: "transactions",
+                title: "📑 Recent Transactions",
+                description: "See your last 5 transactions."
+              }
+            ]
+          },
+          {
+            title: "🛠️ Support Options",
+            rows: [
+              {
+                id: "speak-agent",
+                title: "🧑‍💼 Talk to an Agent",
+                description: "Connect with a customer service rep."
+              },
+              {
+                id: "faq",
+                title: "❓ FAQs",
+                description: "Get answers to common questions."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    callbackData: "user-interaction",
+    notifyUrl: "https://yourdomain.com/whatsapp/callback",
+    urlOptions: {
+      shortenUrl: true,
+      trackClicks: true,
+      trackingUrl: "https://yourdomain.com/track-clicks",
+      removeProtocol: true
     }
-    const duration = Date.now() - start;
-    const labels = {
-      method: req.method,
-      route: req.route?.path || req.path,
-      status_code: res.statusCode
-    };
+  });
 
-    httpDuration.observe(labels, duration);
-    httpRequests.inc(labels);
 
-    if (res.statusCode >= 400) {
-      httpErrors.inc({
-        method: req.method,
-        route: req.route?.path || req.path,
-        status_code: res.statusCode.toString(),
-        error_type: res.statusCode >= 500 ? 'server_error' : 'client_error'
+  const options = {
+    method: 'POST',
+    hostname: 'v344z1.api.infobip.com',
+    path: '/whatsapp/1/message/interactive/list',
+    headers: {
+      Authorization: 'Secret Key',
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    }
+  };
+
+  const infobipReq = https.request(options, (infobipRes) => {
+    let chunks = [];
+
+    infobipRes.on('data', chunk => chunks.push(chunk));
+
+    infobipRes.on('end', () => {
+      const duration = Date.now() - start;
+      const body = Buffer.concat(chunks).toString();
+      const statusCode = infobipRes.statusCode;
+
+      if (statusCode >= 200 && statusCode < 300) {
+        interactive_message_sent_total.inc({ language: 'interactive', platform });
+      }
+      if (statusCode >= 400) {
+        // Classify 4xx vs 5xx
+        const errType = statusCode >= 500 ? 'server_error' : 'client_error';
+        whatsappErrors.inc({ error_type: errType, status_code: statusCode });
+
+        logger.error('Infobip HTTP error', { statusCode, body });
+      }
+
+      whatsappDuration.observe({ status_code: statusCode }, duration);
+
+      let status;
+      try {
+        const parsed = JSON.parse(body);
+
+        // Support both formats:
+        if (parsed.messages?.[0]?.status) {
+          status = parsed.messages[0].status;
+        } else if (parsed.status) {
+          status = parsed.status;
+        }
+
+        let deliveryValue = 0;
+        let statusName = 'unknown';
+
+        if (status?.groupId === 3) {
+          deliveryValue = 1; // Delivered
+        } else if (status?.groupId === 1) {
+          deliveryValue = 0.5; // Pending
+        } else {
+          deliveryValue = 0; // Failed or Rejected
+        }
+
+        if (status?.name) {
+          statusName = status.name;
+        }
+
+        platformDeliveryStatus.set({ platform, status_name: statusName }, deliveryValue);
+      } catch (err) {
+        logger.warn('Failed to parse delivery status', { error: err.message });
+      }
+
+
+
+      res.status(statusCode).send(body);
+
+      logger.info('Infobip response', {
+        statusCode,
+        duration_ms: duration,
+        to,                // request context
+        platform,
+        status_json: body  // raw response for quick inspection
       });
-    }
 
-    logger.info('API Request', {
-      method: req.method,
-      path: req.path,
-      statusCode: res.statusCode,
-      duration: duration,
-      userAgent: req.get('User-Agent'),
-      ip: req.ip
     });
   });
 
-  next();
+  infobipReq.on('error', (err) => {
+    const duration = Date.now() - start;
+    whatsappErrors.inc({ error_type: 'network_error', status_code: 0 });
+    logger.error('Network error while calling Infobip', { error: err.message });
+    res.status(500).json({ error: 'Request failed', message: err.message });
+  });
+
+  infobipReq.write(payload);
+  infobipReq.end();
 });
 
 // ============================================
-// API ENDPOINTS
+// HEALTH CHECK
 // ============================================
 
-// Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    queueDepth: currentQueueDepth
-  });
+  res.json({ status: 'healthy', time: new Date().toISOString() });
 });
 
-// SMS sending endpoint (main API)
-app.post('/sms/send', async (req, res) => {
-  const { to, text, from } = req.body;
-  const platform = (req.get('x-platform') || req.headers['x-platform'] || 'unknown').trim().toLowerCase();
-  const processingTime = getResponseTime();
+// ============================================
+// METRICS ENDPOINT
+// ============================================
 
-  // Always count send attempt
-  sendMessageCalls.inc({ platform });
-
-  // Simulate delay
-  await new Promise(resolve => setTimeout(resolve, processingTime));
-  logger.info(`[DEBUG] platform: '${platform}'`);
-  console.log(`[DEBUG] platform: '${platform}'`);
-
-  // Track delivery
-  const messageDelivered = platform.toLowerCase() !== 'ios';
-
-  if (!messageDelivered) {
-    currentQueueDepth += 1;
-    logger.warn(`[iOS Silent Failure] Message to ${to} not delivered (platform: ${platform})`);
-  } else {
-    
-    smsDelivered.inc({ destination_country: 'US', status: 'delivered', platform });
-  }
-  smsQueue.set(currentQueueDepth);
-
-  // Log API call
-  logger.info('SMS API response', {
-    to,
-    from,
-    platform,
-    accepted: true,
-    delivered: messageDelivered,
-    queueDepth: currentQueueDepth,
-    processingTime
-  });
-
-  // Respond as if it's accepted either way (to simulate silent failure)
-  res.json({
-    messageId: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-    status: 'accepted',
-    to,
-    estimatedDelivery: new Date(Date.now() + 5000).toISOString()
-  });
-});
-
-
-// Load simulation endpoint
-app.post('/admin/simulate-load', (req, res) => {
-  systemUnderLoad = req.body.enabled || false;
-  logger.info('Load Simulation Changed', { enabled: systemUnderLoad });
-  res.json({ loadSimulation: systemUnderLoad });
-});
-
-// Metrics endpoint for Prometheus
 app.get('/metrics', async (req, res) => {
-  // Update system metrics
-  const memUsage = process.memoryUsage();
-  memoryUsage.set({ type: 'rss' }, memUsage.rss);
-  memoryUsage.set({ type: 'heapUsed' }, memUsage.heapUsed);
-  memoryUsage.set({ type: 'heapTotal' }, memUsage.heapTotal);
-
-  systemLoad.set(Math.random() * 3); // Simulate load average
+  const mem = process.memoryUsage();
+  memoryUsage.set({ type: 'rss' }, mem.rss);
+  memoryUsage.set({ type: 'heapUsed' }, mem.heapUsed);
+  memoryUsage.set({ type: 'heapTotal' }, mem.heapTotal);
+  systemLoad.set(Math.random() * 3);
 
   res.set('Content-Type', promClient.register.contentType);
   res.end(await promClient.register.metrics());
 });
 
 // ============================================
-// START SERVER
+// SERVER START
 // ============================================
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  logger.info(`Infobip SMS API listening on port ${PORT}`);
-  console.log(`🚀 SMS API running on http://localhost:${PORT}`);
-  console.log(`📊 Metrics available at http://localhost:${PORT}/metrics`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  logger.info('Received SIGTERM, shutting down gracefully');
-  process.exit(0);
+  logger.info(`WhatsApp API Monitoring running on port ${PORT}`);
+  console.log(`🚀 http://localhost:${PORT}/whatsapp/send-template`);
+  console.log(`📊 Metrics exposed at http://localhost:${PORT}/metrics`);
 });
