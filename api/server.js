@@ -52,8 +52,26 @@ const smsQueue = new promClient.Gauge({
 const smsDelivered = new promClient.Counter({
   name: 'sms_delivered_total',
   help: 'Total SMS messages delivered',
-  labelNames: ['destination_country', 'status']
+  labelNames: ['destination_country', 'status', 'platform']
 });
+
+// ============================================
+// PLATFORM-SPECIFIC METRICS
+// ============================================
+
+const platformError = new promClient.Counter({
+  name: 'platform_error_total',
+  help: 'Total number of platform-specific API errors',
+  labelNames: ['platform', 'api', 'error_type']
+});
+
+const sendMessageCalls = new promClient.Counter({
+  name: 'send_message_calls_total',
+  help: 'Total sendMessage API calls',
+  labelNames: ['platform']
+});
+
+
 
 // ============================================
 // LOGGING SETUP
@@ -75,7 +93,7 @@ const logger = winston.createLogger({
 // SIMULATION DATA
 // ============================================
 
-let currentQueueDepth = 50;
+let currentQueueDepth = 0;
 let systemUnderLoad = false;
 
 // Simulate realistic response times based on system load
@@ -120,7 +138,7 @@ app.use((req, res, next) => {
       httpErrors.inc({
         method: req.method,
         route: req.route?.path || req.path,
-        status_code: res.statusCode.toString(), 
+        status_code: res.statusCode.toString(),
         error_type: res.statusCode >= 500 ? 'server_error' : 'client_error'
       });
     }
@@ -153,83 +171,50 @@ app.get('/health', (req, res) => {
 
 // SMS sending endpoint (main API)
 app.post('/sms/send', async (req, res) => {
-
   const { to, text, from } = req.body;
-
-  // Simulate realistic processing time
+  const platform = (req.get('x-platform') || req.headers['x-platform'] || 'unknown').trim().toLowerCase();
   const processingTime = getResponseTime();
 
-  // Simulate errors under load
-  if (shouldSimulateError()) {
-    logger.error('SMS Send Error', {
-      to: to,
-      error: 'Internal server error',
-      queueDepth: currentQueueDepth
-    });
+  // Always count send attempt
+  sendMessageCalls.inc({ platform });
 
-    return res.status(500).json({
-      error: 'Internal server error',
-      message: 'Unable to process SMS request'
-    });
-  }
-
-  // Simulate validation errors
-  if (!to || !text) {
-    logger.warn('SMS Validation Error', {
-      to: to,
-      error: 'Missing required fields'
-    });
-
-    return res.status(400).json({
-      error: 'Bad request',
-      message: 'Missing required fields: to, text'
-    });
-  }
-
-  // Simulate rate limiting
-  if (req.headers['x-api-key'] === 'rate-limited-key') {
-    logger.warn('Rate Limit Exceeded', {
-      apiKey: req.headers['x-api-key'],
-      to: to
-    });
-
-    return res.status(429).json({
-      error: 'Rate limit exceeded',
-      message: 'Too many requests, please slow down',
-      retryAfter: 30
-    });
-  }
-
-  // Simulate processing delay
+  // Simulate delay
   await new Promise(resolve => setTimeout(resolve, processingTime));
+  logger.info(`[DEBUG] platform: '${platform}'`);
+  console.log(`[DEBUG] platform: '${platform}'`);
 
-  // Update queue metrics
-  currentQueueDepth += Math.random() * 10 - 5; // Random queue fluctuation
-  currentQueueDepth = Math.max(0, currentQueueDepth);
-  smsQueue.set(Math.round(currentQueueDepth));
+  // Track delivery
+  const messageDelivered = platform.toLowerCase() !== 'ios';
 
-  // Simulate successful delivery
-  const country = to.startsWith('+1') ? 'US' :
-    to.startsWith('+44') ? 'UK' :
-      to.startsWith('+49') ? 'DE' : 'OTHER';
+  if (!messageDelivered) {
+    currentQueueDepth += 1;
+    logger.warn(`[iOS Silent Failure] Message to ${to} not delivered (platform: ${platform})`);
+  } else {
+    
+    smsDelivered.inc({ destination_country: 'US', status: 'delivered', platform });
+  }
+  smsQueue.set(currentQueueDepth);
 
-  smsDelivered.inc({ destination_country: country, status: 'delivered' });
-
-  logger.info('SMS Sent Successfully', {
-    to: to,
-    from: from,
-    country: country,
-    processingTime: processingTime,
-    queueDepth: currentQueueDepth
+  // Log API call
+  logger.info('SMS API response', {
+    to,
+    from,
+    platform,
+    accepted: true,
+    delivered: messageDelivered,
+    queueDepth: currentQueueDepth,
+    processingTime
   });
 
+  // Respond as if it's accepted either way (to simulate silent failure)
   res.json({
     messageId: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
     status: 'accepted',
-    to: to,
+    to,
     estimatedDelivery: new Date(Date.now() + 5000).toISOString()
   });
 });
+
 
 // Load simulation endpoint
 app.post('/admin/simulate-load', (req, res) => {
